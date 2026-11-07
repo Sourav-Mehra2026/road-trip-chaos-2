@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ROAD TRIP CHAOS</title>
+
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;
+ overflow:hidden;
+ background:#101820;
+ color:white;
+ font-family:Arial,sans-serif;
+}
+#game{position:fixed;inset:0}
+canvas{display:block}
+#menu{
+ position:fixed;
+ inset:0;
+ z-index:5;
+ display:flex;
+ justify-content:center;
+ align-items:center;
+ background:linear-gradient(#08131deF,#102a35ee);
+ padding:15px;
+}
+.card{
+ width:min(420px,100%);
+ padding:25px;
+ text-align:center;
+ background:#172c37;
+ border:1px solid #526e7b;
+ border-radius:20px;
+}
+h1{color:#ffbd59;font-size:34px}
+input{
+ width:100%;
+ padding:13px;
+ margin:6px 0;
+ border:1px solid #607985;
+ border-radius:9px;
+ background:#091820;
+ color:white;
+ font-size:16px;
+}
+button{
+ padding:12px;
+ border:0;
+ border-radius:9px;
+ background:#ffbd59;
+ color:#1d1b15;
+ font-weight:bold;
+ cursor:pointer;
+}
+#menu button{width:100%;margin-top:8px}
+#message{font-size:13px;color:#c7d8df}
+#hud{
+ display:none;
+ position:fixed;
+ inset:0;
+ pointer-events:none;
+}
+.panel{
+ position:absolute;
+ top:10px;
+ left:10px;
+ background:#10232ddd;
+ padding:10px;
+ border-radius:10px;
+ pointer-events:auto;
+}
+#roomInfo{font-size:13px}
+#controls{
+ position:absolute;
+ bottom:15px;
+ left:0;
+ right:0;
+ display:flex;
+ justify-content:space-between;
+ padding:10px;
+ align-items:end;
+}
+#controls button{
+ min-width:55px;
+ min-height:48px;
+ pointer-events:auto;
+}
+#steering{display:flex;gap:7px}
+#pedals{display:flex;gap:7px}
+#rotate{
+ display:none;
+ position:fixed;
+ inset:0;
+ z-index:20;
+ background:#101820;
+ align-items:center;
+ justify-content:center;
+ text-align:center;
+ padding:25px;
+}
+@media(orientation:portrait){
+ #rotate{display:flex}
+}
+</style>
+</head>
+
+<body>
+
+<div id="game"></div>
+
+<div id="rotate">
+ <div>
+  <h1>ROAD TRIP CHAOS</h1>
+  <h2>📱 Rotate Your Phone</h2>
+  <p>Please play in landscape mode.</p>
+ </div>
+</div>
+
+<div id="menu">
+ <div class="card">
+  <h1>🚐 ROAD TRIP CHAOS</h1>
+  <p>Multiplayer RV Adventure</p>
+
+  <input id="username" maxlength="18"
+  placeholder="Enter username">
+
+  <button id="create">CREATE ROOM</button>
+
+  <input id="roomCode" maxlength="6"
+  placeholder="Enter room code">
+
+  <button id="join">JOIN ROOM</button>
+
+  <p id="message">Connecting to game server...</p>
+ </div>
+</div>
+
+<div id="hud">
+ <div class="panel">
+  <b>ROAD TRIP CHAOS</b>
+  <div id="roomInfo"></div>
+  <div id="players"></div>
+ </div>
+
+ <div id="controls">
+  <div id="steering">
+   <button id="left">◀</button>
+   <button id="right">▶</button>
+  </div>
+
+  <div id="pedals">
+   <button id="brake">BRAKE</button>
+   <button id="gas">GAS ▲</button>
+  </div>
+ </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+
+<script type="module">
+
+import * as THREE from
+"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js";
+
+const $=id=>document.getElementById(id);
+
+let socket=null;
+let roomCode="";
+let myId=null;
+let gameStarted=false;
+
+let scene,camera,renderer;
+let rv;
+let players=new Map();
+
+let gas=0;
+let brake=0;
+let steering=0;
+
+const material=color=>
+new THREE.MeshStandardMaterial({color});
+
+function makeBox(parent,w,h,d,color,x,y,z){
+ const mesh=new THREE.Mesh(
+  new THREE.BoxGeometry(w,h,d),
+  material(color)
+ );
+ mesh.position.set(x,y,z);
+ parent.add(mesh);
+ return mesh;
+}
+
+function createRV(){
+
+ const group=new THREE.Group();
+
+ makeBox(group,3.6,1.8,6.2,
+  0xe8e2d2,0,1.5,0);
+
+ makeBox(group,3.7,.2,6.3,
+  0x303c43,0,.5,0);
+
+ makeBox(group,3.4,1.1,1.3,
+  0xd99c4a,0,2.85,2);
+
+ makeBox(group,3.1,.8,.08,
+  0x65b6d0,0,2.9,2.68);
+
+ for(const side of [-1,1]){
+  for(const z of [-1.7,.2,1.5]){
+   makeBox(group,.06,.7,.9,
+    0x65b6d0,side*1.82,2,z);
+  }
+ }
+
+ for(const side of [-1,1]){
+  for(const z of [-2,2]){
+   const wheel=new THREE.Mesh(
+    new THREE.CylinderGeometry(.52,.52,.32,16),
+    material(0x15191c)
+   );
+   wheel.rotation.z=Math.PI/2;
+   wheel.position.set(side*1.85,.65,z);
+   group.add(wheel);
+  }
+ }
+
+ return group;
+}
+
+function createCharacter(color){
+
+ const group=new THREE.Group();
+
+ const body=new THREE.Mesh(
+  new THREE.CapsuleGeometry(.2,.65,4,8),
+  material(color)
+ );
+
+ body.position.y=1;
+ group.add(body);
+
+ const head=new THREE.Mesh(
+  new THREE.SphereGeometry(.28,12,12),
+  material(0xffc99c)
+ );
+
+ head.position.y=1.65;
+ group.add(head);
+
+ return group;
+}
+
+function init(){
+
+ scene=new THREE.Scene();
+ scene.background=new THREE.Color(0x9bcce5);
+ scene.fog=new THREE.Fog(0x9bcce5,70,220);
+
+ camera=new THREE.PerspectiveCamera(
+  65,innerWidth/innerHeight,.1,500
+ );
+
+ renderer=new THREE.WebGLRenderer({
+  antialias:true
+ });
+
+ renderer.setPixelRatio(
+  Math.min(devicePixelRatio,1.5)
+ );
+
+ renderer.setSize(innerWidth,innerHeight);
+ $("game").appendChild(renderer.domElement);
+
+ scene.add(new THREE.HemisphereLight(
+  0xffffff,0x63754d,2
+ ));
+
+ const sun=new THREE.DirectionalLight(0xffffff,2);
+ sun.position.set(-30,60,20);
+ scene.add(sun);
+
+ const ground=new THREE.Mesh(
+  new THREE.PlaneGeometry(400,400),
+  material(0x668c53)
+ );
+
+ ground.rotation.x=-Math.PI/2;
+ ground.position.y=-.1;
+ scene.add(ground);
+
+ makeBox(scene,13,.1,400,
+  0x42474b,0,-.02,0);
+
+ for(let z=-190;z<200;z+=10){
+  makeBox(scene,.15,.03,3,
+   0xffe7a1,0,.04,z);
+ }
+
+ for(let i=0;i<90;i++){
+
+  const x=(Math.random()>.5?1:-1)*
+  (12+Math.random()*25);
+
+  const z=-180+Math.random()*360;
+
+  const trunk=new THREE.Mesh(
+   new THREE.CylinderGeometry(.25,.4,2.5,7),
+   material(0x795032)
+  );
+
+  trunk.position.set(x,1,z);
+  scene.add(trunk);
+
+  const tree=new THREE.Mesh(
+   new THREE.ConeGeometry(2.5,5,7),
+   material(0x287b43)
+  );
+
+  tree.position.set(x,4,z);
+  scene.add(tree);
+ }
+
+ rv=createRV();
+ scene.add(rv);
+
+ window.addEventListener("resize",resize);
+
+ animate();
+}
+
+function resize(){
+
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+
+ renderer.setSize(innerWidth,innerHeight);
+}
+
+function updatePlayers(list){
+
+ if(!Array.isArray(list))return;
+
+ const active=new Set();
+
+ for(const p of list){
+
+  active.add(p.id);
+
+  if(!players.has(p.id)){
+
+   const character=createCharacter(p.color||0xffbd59);
+
+   scene.add(character);
+   players.set(p.id,character);
+  }
+
+  const character=players.get(p.id);
+
+  character.position.set(
+   Number(p.x)||0,
+   0,
+   Number(p.z)||0
+  );
+
+  character.rotation.y=Number(p.yaw)||0;
+ }
+
+ for(const [id,character] of players){
+
+  if(!active.has(id)){
+   scene.remove(character);
+   players.delete(id);
+  }
+ }
+
+ $("players").textContent=
+ "Players: "+list.length+"/16";
+}
+
+function animate(){
+
+ requestAnimationFrame(animate);
+
+ if(gameStarted){
+
+  const target=new THREE.Vector3(
+   rv.position.x,
+   2,
+   rv.position.z
+  );
+
+  const offset=new THREE.Vector3(0,6,-11);
+
+  camera.position.lerp(
+   target.clone().add(offset),.08
+  );
+
+  camera.lookAt(target);
+ }
+
+ renderer.render(scene,camera);
+}
+
+function startGame(result){
+
+ if(!result||!result.ok){
+  $("message").textContent=
+   result?.error||"Room error";
+  return;
+ }
+
+ roomCode=result.code;
+ myId=socket.id;
+ gameStarted=true;
+
+ $("menu").style.display="none";
+ $("hud").style.display="block";
+
+ $("roomInfo").textContent=
+  "ROOM: "+roomCode;
+
+ if(result.state){
+  updatePlayers(result.state.players);
+ }
+}
+
+function connect(){
+
+ socket=io();
+
+ socket.on("connect",()=>{
+  $("message").textContent=
+   "Server connected!";
+ });
+
+ socket.on("connect_error",()=>{
+  $("message").textContent=
+   "Server connection failed. Refresh and try again.";
+ });
+
+ socket.on("state",state=>{
+
+  if(!gameStarted)return;
+
+  if(state.vehicle){
+   rv.position.set(
+    state.vehicle.x||0,
+    0,
+    state.vehicle.z||0
+   );
+
+   rv.rotation.y=state.vehicle.yaw||0;
+  }
+
+  updatePlayers(state.players);
+ });
+
+ socket.on("toast",message=>{
+  $("message").textContent=message;
+ });
+}
+
+$("create").onclick=()=>{
+
+ const username=
+  $("username").value.trim()||"Player";
+
+ if(!socket?.connected){
+  $("message").textContent="Server not connected";
+  return;
+ }
+
+ socket.emit("createRoom",
+  {username},
+  startGame
+ );
+};
+
+$("join").onclick=()=>{
+
+ const username=
+  $("username").value.trim()||"Player";
+
+ const code=
+  $("roomCode").value.trim().toUpperCase();
+
+ if(!socket?.connected){
+  $("message").textContent="Server not connected";
+  return;
+ }
+
+ socket.emit("joinRoom",
+  {username,code},
+  startGame
+ );
+};
+
+function hold(id,callback){
+
+ const button=$(id);
+
+ button.addEventListener("pointerdown",e=>{
+  e.preventDefault();
+  callback(true);
+ });
+
+ ["pointerup","pointercancel","pointerleave"].forEach(event=>{
+  button.addEventListener(event,()=>callback(false));
+ });
+}
+
+hold("gas",v=>gas=v?1:0);
+hold("brake",v=>brake=v?1:0);
+hold("left",v=>steering=v?-1:0);
+hold("right",v=>steering=v?1:0);
+
+init();
+connect();
+
+</script>
+</body>
+  </html>
